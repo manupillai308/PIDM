@@ -404,6 +404,52 @@ class Downsample(nn.Module):
         assert x.shape[1] == self.channels
         return self.op(x)
 
+class TemporalAttentionBlock(nn.Module):
+    """
+    An attention block that allows spatial positions to attend to each other.
+
+    Originally ported from here, but adapted to the N-d case.
+    https://github.com/hojonathanho/diffusion/blob/1e0dceb3b3495bbe19116a5e1b3596cd0706c543/diffusion_tf/models/unet.py#L66.
+    """
+    def __init__(
+        self,
+        channels,
+        num_heads=1,
+        num_head_channels=-1,
+        use_checkpoint=False,
+        use_new_attention_order=False,
+    ):
+        super().__init__()
+        self.channels = channels
+        if num_head_channels == -1:
+            self.num_heads = num_heads
+        else:
+            assert (
+                channels % num_head_channels == 0
+            ), f"q,k,v channels {channels} is not divisible by num_head_channels {num_head_channels}"
+            self.num_heads = channels // num_head_channels
+        self.use_checkpoint = use_checkpoint
+        self.norm = nn.LayerNorm(channels)#normalization(channels)
+        self.qkv = conv_nd(1, channels, channels * 3, 1)
+        if use_new_attention_order:
+            # split qkv before split heads
+            self.attention = QKVAttention(self.num_heads)
+        else:
+            # split heads before split qkv
+            self.attention = QKVAttentionLegacy(self.num_heads)
+
+        self.proj_out = zero_module(conv_nd(1, channels, channels, 1))
+
+    def forward(self, x):
+        return torch_checkpoint(self._forward, (x, ), self.use_checkpoint)
+
+    def _forward(self, x):
+        b, c, *spatial = x.shape
+        x = th.concat(th.chunk(x, b), dim=-1)
+        qkv = self.qkv(x)
+        h = self.attention(qkv)
+        h = x + self.proj_out(h)
+        return th.concat(th.chunk(h, 5, dim=-1), dim=0)
 
 class AttentionBlock(nn.Module):
     """
@@ -434,6 +480,7 @@ class AttentionBlock(nn.Module):
         self.qkv = conv_nd(1, channels, channels * 3, 1)
         self.to_kv = conv_nd(1, channels, channels * 2, 1)
         self.to_q = conv_nd(1, channels, channels * 1, 1)
+        self.temporalattention = TemporalAttentionBlock(channels, num_heads, num_head_channels, use_checkpoint, use_new_attention_order)
         if use_new_attention_order:
             # split qkv before split heads
             self.selfattention = QKVAttention(self.num_heads)
@@ -470,8 +517,9 @@ class AttentionBlock(nn.Module):
         qkv = th.cat([q, kv], 1)
         h = self.crossattention(qkv)
         h = self.proj_out2(h)
-
-        return (x + h).reshape(b, c, *spatial)
+        x = (x + h).reshape(b, c, *spatial)
+        x = self.temporalattention(x)
+        return x
 
 
 class AttentionBlock_self(nn.Module):
@@ -637,3 +685,15 @@ class AttentionPool2d(nn.Module):
         x = self.attention(x)
         x = self.c_proj(x)
         return x[:, :, 0]
+
+
+if __name__ == "__main__":
+    # model = AttentionBlock(10)
+    x = th.randn(5, 10, 32*32)
+    # cond = th.randn(5, 10, 32, 32)
+    # y = model(x, cond)
+    print(x.shape)
+    y = th.concat(th.chunk(x, 5), dim=-1)
+    print(y.shape)
+    print(th.concat(th.chunk(y, 5, dim=-1), dim=0).shape)
+    
