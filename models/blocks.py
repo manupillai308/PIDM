@@ -445,11 +445,12 @@ class TemporalAttentionBlock(nn.Module):
 
     def _forward(self, x):
         b, c, *spatial = x.shape
+        x = x.reshape(b, c, -1)
         x = th.concat(th.chunk(x, b), dim=-1)
         qkv = self.qkv(x)
         h = self.attention(qkv)
         h = x + self.proj_out(h)
-        return th.concat(th.chunk(h, 5, dim=-1), dim=0)
+        return th.concat(th.chunk(h, b, dim=-1), dim=0).reshape(b, c, *spatial)
 
 class AttentionBlock(nn.Module):
     """
@@ -688,12 +689,9 @@ class AttentionPool2d(nn.Module):
 
 
 if __name__ == "__main__":
-    # model = AttentionBlock(10)
-    x = th.randn(5, 10, 32*32)
-    # cond = th.randn(5, 10, 32, 32)
-    # y = model(x, cond)
-    print(x.shape)
-    y = th.concat(th.chunk(x, 5), dim=-1)
+    model = AttentionBlock(10)
+    x = th.randn(5, 10, 32, 32)
+    cond = th.randn(5, 10, 32, 32)
+    y = model(x, cond)
     print(y.shape)
-    print(th.concat(th.chunk(y, 5, dim=-1), dim=0).shape)
     
